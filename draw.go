@@ -12,11 +12,12 @@ type Draw struct {
 	walls            gl.Buffer
 	wallLength       int
 	simpleShader     gl.Program
-	wallShader       gl.Program
+	losBlockerShader gl.Program
 	LOSfb            gl.Framebuffer
 	LOStex           gl.Texture
 	backgroundShader gl.Program
 	backgroundQuad   gl.Buffer
+	wallShader       gl.Program
 }
 
 func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
@@ -119,7 +120,7 @@ func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 	shader.AttachShader(fs)
 	shader.BindFragDataLocation(0, "outColor")
 	shader.Link()
-	draw.wallShader = shader
+	draw.losBlockerShader = shader
 
 	vs = compileShader(gl.VERTEX_SHADER, `
 		#version 150 compatibility
@@ -152,10 +153,10 @@ func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 			float shadow = texture(los,(screenPos + vec2(1,1))/ 2).r;
 			if (shadow > 0.5){
 				float grayScale = rand(floor(worldPos * vec2(5,10)));
-				grayScale = round(grayScale) / 20 + 0.1;
+				grayScale = round(grayScale) / 40 + 0.1;
 				outColor = vec4(grayScale, grayScale, grayScale, 1.0);
 			} else {
-			    outColor = vec4(1.0,1.0,1.0,1.0);
+			    outColor = vec4(0.7,0.7,0.7,1.0);
 			}
 		}
 		`)
@@ -166,6 +167,66 @@ func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 	shader.BindFragDataLocation(0, "outColor")
 	shader.Link()
 	draw.backgroundShader = shader
+
+	vs = compileShader(gl.VERTEX_SHADER, `
+		#version 150 compatibility
+		in vec2 position;
+		out vec2 worldPos;
+		void main()
+		{
+			worldPos = position;
+		    gl_Position = (gl_ProjectionMatrix * gl_ModelViewMatrix * vec4(position, 0.0, 1.0));
+		}
+		`)
+
+	fs = compileShader(gl.FRAGMENT_SHADER, `
+		#version 150
+
+		in vec2 worldPos;
+		out vec4 outColor;
+		uniform int neighbors;
+		// 210
+		// 4 3
+		// 765
+
+		void main()
+		{
+			float grayscale = 0.1 + clamp(sin((worldPos.x - worldPos.y) * 12.5663706144),0,1)/5;
+			if (worldPos.x < -0.3 && (neighbors & (1 << 4)) > 0){
+				grayscale = 0.3;
+			}
+			if (worldPos.x > 0.3 && (neighbors & (1 << 3)) > 0){
+				grayscale = 0.3;
+			}
+			if (worldPos.y < -0.3 && (neighbors & (1 << 6)) > 0){
+				grayscale = 0.3;
+			}
+			if (worldPos.y > 0.3 && (neighbors & (1 << 1)) > 0){
+				grayscale = 0.3;
+			}
+			if (worldPos.x > 0.3 && worldPos.y > 0.3 && (neighbors & 1) > 0){
+				grayscale = 0.3;
+			}
+			if (worldPos.x < -0.3 && worldPos.y > 0.3 && (neighbors & 1 << 2) > 0){
+				grayscale = 0.3;
+			}
+			if (worldPos.x > 0.3 && worldPos.y < -0.3 && (neighbors & 1 << 5) > 0){
+				grayscale = 0.3;
+			}
+			if (worldPos.x < -0.3 && worldPos.y < -0.3 && (neighbors & 1 << 7) > 0){
+				grayscale = 0.3;
+			}
+
+		    outColor = vec4(grayscale,grayscale,grayscale,1.0);
+		}
+		`)
+
+	shader = gl.CreateProgram()
+	shader.AttachShader(vs)
+	shader.AttachShader(fs)
+	shader.BindFragDataLocation(0, "outColor")
+	shader.Link()
+	draw.wallShader = shader
 
 	return &draw, nil
 }
@@ -201,8 +262,8 @@ func (draw *Draw) createLosBuffer() {
 
 func (draw *Draw) generateWalls(scene *Scene) {
 	vertexes := make([]float32, 0)
-	for i := 0; i < scene.width-1; i++ {
-		for j := 0; j < scene.height-1; j++ {
+	for i := 0; i < scene.width; i++ {
+		for j := 0; j < scene.height; j++ {
 			if (scene.getWall(i, j) == WallNone) != (scene.getWall(i+1, j) == WallNone) {
 				vertexes = append(vertexes, float32(i)+0.5)
 				vertexes = append(vertexes, float32(j)-0.5)
@@ -237,7 +298,7 @@ func (draw *Draw) generateWalls(scene *Scene) {
 	draw.walls.Bind(gl.ARRAY_BUFFER)
 	gl.BufferData(gl.ARRAY_BUFFER, len(vertexes)*8, vertexes, gl.DYNAMIC_DRAW)
 	draw.walls.Unbind(gl.ARRAY_BUFFER)
-	draw.wallLength = len(vertexes)
+	draw.wallLength = len(vertexes) / 3
 
 }
 
@@ -257,9 +318,9 @@ func (draw *Draw) draw(scene *Scene, ops *OutputState) {
 	gl.Translatef(ops.screenCenter[0]*-1, ops.screenCenter[1]*-1, 0)
 
 	draw.walls.Bind(gl.ARRAY_BUFFER)
-	draw.wallShader.Use()
+	draw.losBlockerShader.Use()
 
-	posAttrib := draw.wallShader.GetAttribLocation("position")
+	posAttrib := draw.losBlockerShader.GetAttribLocation("position")
 	posAttrib.AttribPointer(3, gl.FLOAT, false, 0, nil)
 	posAttrib.EnableArray()
 
@@ -281,13 +342,46 @@ func (draw *Draw) draw(scene *Scene, ops *OutputState) {
 	posAttrib.AttribPointer(2, gl.FLOAT, false, 0, nil)
 	posAttrib.EnableArray()
 
-	gl.DrawArrays(gl.QUADS, 0, 6)
+	gl.DrawArrays(gl.QUADS, 0, 4)
 
 	draw.backgroundQuad.Unbind(gl.ARRAY_BUFFER)
 	draw.LOStex.Unbind(gl.TEXTURE_2D)
 	/////////////////////////////////////////////////////////
 	/////////////////////////////////////////////////////////
 	draw.simpleQuad.Bind(gl.ARRAY_BUFFER)
+	draw.wallShader.Use()
+
+	posAttrib = draw.wallShader.GetAttribLocation("position")
+	posAttrib.AttribPointer(2, gl.FLOAT, false, 0, nil)
+	posAttrib.EnableArray()
+
+	neighborsAttrib := draw.wallShader.GetUniformLocation("neighbors")
+
+	for i := 0; i < scene.width; i++ {
+		for j := 0; j < scene.width; j++ {
+			if scene.getWall(i, j) == WallStone {
+				var neighbors int = scene.isNotWall(i-1, j-1)<<7 |
+					scene.isNotWall(i, j-1)<<6 |
+					scene.isNotWall(i+1, j-1)<<5 |
+					scene.isNotWall(i-1, j)<<4 |
+					scene.isNotWall(i+1, j)<<3 |
+					scene.isNotWall(i-1, j+1)<<2 |
+					scene.isNotWall(i, j+1)<<1 |
+					scene.isNotWall(i+1, j+1)
+					// 210
+					// 4 3
+					// 765
+				neighborsAttrib.Uniform1i(neighbors)
+				_ = neighbors
+				gl.PushMatrix()
+				gl.Translatef(float32(i), float32(j), 0)
+				gl.DrawArrays(gl.QUADS, 0, 4)
+				gl.PopMatrix()
+			}
+		}
+	}
+	/////////////////////////////////////////////////////////
+	/////////////////////////////////////////////////////////
 	draw.simpleShader.Use()
 
 	posAttrib = draw.simpleShader.GetAttribLocation("position")
@@ -296,22 +390,6 @@ func (draw *Draw) draw(scene *Scene, ops *OutputState) {
 
 	uniColor := draw.simpleShader.GetUniformLocation("triangleColor")
 	uniColor.Uniform3f(0.0, 1.0, 0.0)
-
-	for i := 0; i < scene.width; i++ {
-		for j := 0; j < scene.width; j++ {
-			if scene.getWall(i, j) == WallStone {
-
-				gl.PushMatrix()
-				gl.Translatef(float32(i), float32(j), 0)
-				gl.DrawArrays(gl.QUADS, 0, 6)
-				gl.PopMatrix()
-			}
-		}
-	}
-	/////////////////////////////////////////////////////////
-	/////////////////////////////////////////////////////////
-	uniColor = draw.simpleShader.GetUniformLocation("triangleColor")
-	uniColor.Uniform3f(1.0, 0.0, 0.0)
 
 	for _, entity := range scene.entities {
 		entity.draw(draw)

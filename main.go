@@ -2,7 +2,9 @@ package main
 
 import (
 	"github.com/Laremere/sdl2"
+	"io/ioutil"
 	"log"
+	"strconv"
 	"time"
 )
 
@@ -34,18 +36,37 @@ func main() {
 		log.Fatal(err)
 	}
 
+	mapBytes, err := ioutil.ReadFile("map.txt")
+	if err != nil {
+		log.Fatal(err)
+	}
+	mapString := string(mapBytes)
+
 	scene := newScene(50, 50)
-	for i := 0; i < 50; i++ {
-		for j := 0; j < 50; j++ {
-			if i == 0 || i == 49 ||
-				j == 0 || j == 49 ||
-				(j%4 == 0 && i%4 == 0) {
-				scene.setWall(i, j, WallStone)
-			} else {
-				scene.setWall(i, j, WallNone)
+
+	k := 0
+	for j := 0; j < 50; j++ {
+		for i := 0; i < 50; i++ {
+			mapItem := int64(-1)
+			for mapItem < 0 {
+				token := string(mapString[k])
+				mapItem, err = strconv.ParseInt(token, 10, 32)
+				if err != nil {
+					mapItem = -1
+				}
+				k++
 			}
+			scene.setWall(i, 49-j, Wall(mapItem))
+			// if i == 0 || i == 49 ||
+			// 	j == 0 || j == 49 ||
+			// 	(j%4 == 0 && i%4 == 0) {
+			// 	scene.setWall(i, j, WallStone)
+			// } else {
+			// 	scene.setWall(i, j, WallNone)
+			// }
 		}
 	}
+
 	draw.generateWalls(scene)
 
 	scene.entities = append(scene.entities, NewPlayer())
