@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"github.com/go-gl/gl"
+	"log"
 )
 
 type Draw struct {
@@ -61,26 +62,31 @@ func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 
 		in vec2 position;
 
-		out vec3 Color;
+		out vec2 screenPos;
 
 		void main()
 		{
-			Color = vec3(abs(position.x - position.y),0,0);
 		    gl_Position = gl_ProjectionMatrix * gl_ModelViewMatrix * vec4(position, 0.0, 1.0);
+		    screenPos = gl_Position.xy;
 		}
 		`)
 
 	fs := compileShader(gl.FRAGMENT_SHADER, `
 		#version 150
 
+	uniform sampler2D los;
 		uniform vec3 triangleColor;
-		in vec3 Color;
+		in vec2 screenPos;
 
 		out vec4 outColor;
 
 		void main()
 		{
-		    outColor = vec4(triangleColor, 1.0);
+			float shadow = texture(los,(screenPos + vec2(1,1))/ 2).r;
+			if (shadow > 0.5){
+				discard;
+			}
+			outColor = vec4(triangleColor, 1.0);
 		}
 		`)
 
@@ -258,6 +264,7 @@ func (draw *Draw) createLosBuffer() {
 
 	draw.LOStex.Unbind(gl.TEXTURE_2D)
 	draw.LOSfb.Unbind()
+	log.Println("====================================================")
 }
 
 func (draw *Draw) generateWalls(scene *Scene) {
@@ -356,7 +363,6 @@ func (draw *Draw) draw(scene *Scene, ops *OutputState) {
 	posAttrib.EnableArray()
 
 	neighborsAttrib := draw.wallShader.GetUniformLocation("neighbors")
-
 	for i := 0; i < scene.width; i++ {
 		for j := 0; j < scene.width; j++ {
 			if scene.getWall(i, j) == WallStone {
@@ -383,18 +389,16 @@ func (draw *Draw) draw(scene *Scene, ops *OutputState) {
 	/////////////////////////////////////////////////////////
 	/////////////////////////////////////////////////////////
 	draw.simpleShader.Use()
+	draw.LOStex.Bind(gl.TEXTURE_2D)
 
 	posAttrib = draw.simpleShader.GetAttribLocation("position")
 	posAttrib.AttribPointer(2, gl.FLOAT, false, 0, nil)
 	posAttrib.EnableArray()
-
-	uniColor := draw.simpleShader.GetUniformLocation("triangleColor")
-	uniColor.Uniform3f(0.0, 1.0, 0.0)
 
 	for _, entity := range scene.entities {
 		entity.draw(draw)
 	}
 
 	draw.simpleQuad.Unbind(gl.ARRAY_BUFFER)
-
+	draw.LOStex.Unbind(gl.TEXTURE_2D)
 }

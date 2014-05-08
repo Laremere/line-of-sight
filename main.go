@@ -4,16 +4,30 @@ import (
 	"github.com/Laremere/sdl2"
 	"io/ioutil"
 	"log"
+	"net/http"
+	"runtime"
 	"strconv"
 	"time"
 )
 
 func main() {
+	runtime.LockOSThread()
+
+	res, err := http.Get("http://vps.redig.us")
+	if err != nil {
+		log.Fatal(err)
+	}
+	ipAddrBytes, err := ioutil.ReadAll(res.Body)
+	res.Body.Close()
+	if err != nil {
+		log.Fatal(err)
+	}
+	log.Println("Server IP:", string(ipAddrBytes))
 
 	screenWidth := 1280
 	screenHeight := 720
 
-	err := sdl.SdlInit()
+	err = sdl.SdlInit()
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -69,7 +83,9 @@ func main() {
 
 	draw.generateWalls(scene)
 
-	scene.entities = append(scene.entities, NewPlayer())
+	player := NewPlayer()
+	scene.entities = append(scene.entities, player)
+	scene.entities = append(scene.entities, newServerConn(string(ipAddrBytes), player))
 
 	var inputState InputState
 	inputState.keydown = make(map[string]bool)
@@ -77,6 +93,8 @@ func main() {
 	outputState.screenBounds[0] = float32(screenWidth)
 	outputState.screenBounds[1] = float32(screenHeight)
 	for running := true; running; {
+		EndTime := time.Now().Add(time.Second / 60)
+
 		for {
 			event := sdl.PollEvent()
 			if event == nil {
@@ -120,6 +138,7 @@ func main() {
 
 		draw.draw(scene, &outputState)
 		window.GlSwap()
-		time.Sleep(time.Second / 30)
+		//time.Sleep(time.Second / 30)
+		time.Sleep(EndTime.Sub(time.Now()))
 	}
 }

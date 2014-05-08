@@ -1,8 +1,12 @@
 package main
 
 import (
+	"encoding/gob"
+	"github.com/Laremere/line-of-sight/common"
 	"github.com/go-gl/gl"
+	"log"
 	"math"
+	"net"
 )
 
 type Scene struct {
@@ -64,16 +68,16 @@ type OutputState struct {
 
 type Player struct {
 	position [2]float32
+	speed    float32
 }
 
 func NewPlayer() *Player {
-	return &Player{[2]float32{5, 5}}
+	return &Player{[2]float32{5, 5}, 0.1}
 }
 
 func (p *Player) step(scene *Scene, ips *InputState, ops *OutputState) {
-	var speed float32 = 0.2
-	p.position[0] += ips.direction[0] * speed
-	p.position[1] += ips.direction[1] * speed
+	p.position[0] += ips.direction[0] * p.speed
+	p.position[1] += ips.direction[1] * p.speed
 
 	tileX := float32(math.Floor(float64(p.position[0] + 0.5)))
 	tileY := float32(math.Floor(float64(p.position[1] + 0.5)))
@@ -139,8 +143,87 @@ func (p *Player) step(scene *Scene, ips *InputState, ops *OutputState) {
 }
 
 func (p *Player) draw(draw *Draw) {
-	gl.PushMatrix()
-	gl.Translatef(p.position[0], p.position[1], 0)
-	gl.DrawArrays(gl.QUADS, 0, 6)
-	gl.PopMatrix()
+	// uniColor := draw.simpleShader.GetUniformLocation("triangleColor")
+	// uniColor.Uniform3f(0.0, 1.0, 0.0)
+
+	// gl.PushMatrix()
+	// gl.Translatef(p.position[0], p.position[1], 0)
+	// gl.DrawArrays(gl.QUADS, 0, 6)
+	// gl.PopMatrix()
+}
+
+type Enemy struct {
+	color    [3]float32
+	position [2]float32
+}
+
+type serverConn struct {
+	enemies       []Enemy
+	player        *Player
+	gobin         *gob.Decoder
+	gobout        *gob.Encoder
+	serverUpdates chan *common.ServerState
+}
+
+func newServerConn(ipAddr string, player *Player) *serverConn {
+	var sc serverConn
+	sc.player = player
+	sc.enemies = make([]Enemy, 1)
+	sc.enemies[0] = Enemy{[3]float32{0.5, 0.5, 1}, [2]float32{5, 5}}
+
+	conn, err := net.Dial("tcp", ipAddr+":"+"2667")
+	if err != nil {
+		log.Fatal(err)
+	}
+	sc.gobout = gob.NewEncoder(conn)
+	sc.gobin = gob.NewDecoder(conn)
+
+	sc.serverUpdates = make(chan *common.ServerState, 5)
+	go func() {
+		for {
+			var ss common.ServerState
+			err = sc.gobin.Decode(&ss)
+			if err != nil {
+				log.Fatal(err)
+			}
+			sc.serverUpdates <- &ss
+		}
+	}()
+	return &sc
+}
+
+func (sc *serverConn) step(*Scene, *InputState, *OutputState) {
+	var ss *common.ServerState
+outerLoop:
+	for {
+		select {
+		case ss = <-sc.serverUpdates:
+		default:
+			break outerLoop
+		}
+	}
+	if ss != nil {
+
+		sc.enemies = make([]Enemy, len(ss.Players))
+		for i := range ss.Players {
+			sc.enemies[i].color = ss.Players[i].Color
+			sc.enemies[i].position = ss.Players[i].Position
+		}
+	}
+
+	cs := common.ClientState{sc.player.position}
+	sc.gobout.Encode(cs)
+}
+
+func (sc *serverConn) draw(draw *Draw) {
+	uniColor := draw.simpleShader.GetUniformLocation("triangleColor")
+	for _, enemy := range sc.enemies {
+		uniColor.Uniform3f(enemy.color[0], enemy.color[1], enemy.color[2])
+
+		gl.PushMatrix()
+		gl.Translatef(enemy.position[0], enemy.position[1], 0)
+		gl.DrawArrays(gl.QUADS, 0, 6)
+		gl.PopMatrix()
+
+	}
 }
