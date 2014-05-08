@@ -6,25 +6,34 @@ import (
 )
 
 type Draw struct {
-	simpleQuad   gl.Buffer
-	walls        gl.Buffer
-	wallLength   int
-	simpleShader gl.Program
-	wallShader   gl.Program
+	screenWidth,
+	screenHeight int
+	simpleQuad       gl.Buffer
+	walls            gl.Buffer
+	wallLength       int
+	simpleShader     gl.Program
+	wallShader       gl.Program
+	LOSfb            gl.Framebuffer
+	LOStex           gl.Texture
+	backgroundShader gl.Program
+	backgroundQuad   gl.Buffer
 }
 
 func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 	var draw Draw
+	draw.screenHeight = screenHeight
+	draw.screenWidth = screenWidth
 	gl.Init()
 
 	gl.Viewport(0, 0, screenWidth, screenHeight)
-	gl.Enable(gl.STENCIL_TEST)
+	draw.createLosBuffer()
 
-	buffers := make([]gl.Buffer, 2)
+	buffers := make([]gl.Buffer, 3)
 	gl.GenBuffers(buffers)
 
 	draw.simpleQuad = buffers[0]
 	draw.walls = buffers[1]
+	draw.backgroundQuad = buffers[2]
 
 	draw.simpleQuad.Bind(gl.ARRAY_BUFFER)
 	gl.BufferData(gl.ARRAY_BUFFER, 8*2*4*1, //bytes * per vertex * per quad * quads
@@ -35,6 +44,16 @@ func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 			-0.5, 0.5,
 		}, gl.STATIC_DRAW)
 	draw.simpleQuad.Unbind(gl.ARRAY_BUFFER)
+
+	draw.backgroundQuad.Bind(gl.ARRAY_BUFFER)
+	gl.BufferData(gl.ARRAY_BUFFER, 8*2*4*1, //bytes * per vertex * per quad * quads
+		[]float32{
+			-50, -50,
+			100, -50,
+			100, 100,
+			-50, 100,
+		}, gl.STATIC_DRAW)
+	draw.backgroundQuad.Unbind(gl.ARRAY_BUFFER)
 
 	vs := compileShader(gl.VERTEX_SHADER, `
 		#version 150 compatibility
@@ -87,11 +106,11 @@ func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 
 	fs = compileShader(gl.FRAGMENT_SHADER, `
 		#version 150
-		out vec4 outColor;
+		out float outColor;
 
 		void main()
 		{
-		    outColor = vec4(1.0, 1.0, 1.0, 1.0);
+		    outColor = 1.0;
 		}
 		`)
 
@@ -101,6 +120,52 @@ func SetupOpengl(screenWidth, screenHeight int) (*Draw, error) {
 	shader.BindFragDataLocation(0, "outColor")
 	shader.Link()
 	draw.wallShader = shader
+
+	vs = compileShader(gl.VERTEX_SHADER, `
+		#version 150 compatibility
+		in vec2 position;
+		out vec2 screenPos;
+		out vec2 worldPos;
+		void main()
+		{
+			worldPos = position;
+		    screenPos = (gl_ProjectionMatrix * gl_ModelViewMatrix * vec4(position, 0.0, 1.0)).xy;
+		    gl_Position = vec4(screenPos, 0.0, 1.0);
+		}
+		`)
+
+	fs = compileShader(gl.FRAGMENT_SHADER, `
+		#version 150
+
+		in vec2 screenPos;
+		in vec2 worldPos;
+		out vec4 outColor;
+		uniform sampler2D los;
+
+		//From stack overflow
+		float rand(vec2 co){
+ 		   return fract(sin(dot(co.xy ,vec2(12.9898,78.233))) * 43758.5453);
+		}
+
+		void main()
+		{
+			float shadow = texture(los,(screenPos + vec2(1,1))/ 2).r;
+			if (shadow > 0.5){
+				float grayScale = rand(floor(worldPos * vec2(5,10)));
+				grayScale = round(grayScale) / 20 + 0.1;
+				outColor = vec4(grayScale, grayScale, grayScale, 1.0);
+			} else {
+			    outColor = vec4(1.0,1.0,1.0,1.0);
+			}
+		}
+		`)
+
+	shader = gl.CreateProgram()
+	shader.AttachShader(vs)
+	shader.AttachShader(fs)
+	shader.BindFragDataLocation(0, "outColor")
+	shader.Link()
+	draw.backgroundShader = shader
 
 	return &draw, nil
 }
@@ -113,6 +178,25 @@ func compileShader(shaderType gl.GLenum, source string) gl.Shader {
 		panic(errors.New("Error compiling shader: " + shader.GetInfoLog()))
 	}
 	return shader
+}
+
+func (draw *Draw) createLosBuffer() {
+	draw.LOSfb = gl.GenFramebuffer()
+	draw.LOSfb.Bind()
+
+	draw.LOStex = gl.GenTexture()
+	draw.LOStex.Bind(gl.TEXTURE_2D)
+
+	gl.TexImage2D(gl.TEXTURE_2D, 0, gl.R8,
+		draw.screenWidth, draw.screenHeight,
+		0, gl.RED, gl.BYTE, nil)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+	gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+	gl.FramebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0,
+		gl.TEXTURE_2D, draw.LOStex, 0)
+
+	draw.LOStex.Unbind(gl.TEXTURE_2D)
+	draw.LOSfb.Unbind()
 }
 
 func (draw *Draw) generateWalls(scene *Scene) {
@@ -158,7 +242,8 @@ func (draw *Draw) generateWalls(scene *Scene) {
 }
 
 func (draw *Draw) draw(scene *Scene, ops *OutputState) {
-	gl.Clear(gl.COLOR_BUFFER_BIT | gl.STENCIL_BUFFER_BIT)
+	draw.LOSfb.Bind()
+	gl.Clear(gl.COLOR_BUFFER_BIT)
 	gl.MatrixMode(gl.PROJECTION)
 	gl.LoadIdentity()
 	gl.Ortho(
@@ -180,8 +265,28 @@ func (draw *Draw) draw(scene *Scene, ops *OutputState) {
 
 	gl.DrawArrays(gl.QUADS, 0, draw.wallLength)
 
-	draw.walls.Bind(gl.ARRAY_BUFFER)
+	draw.walls.Unbind(gl.ARRAY_BUFFER)
+	draw.LOSfb.Unbind()
+	/////////////////////////////////////////////////////////////
+	/////////////////////////////////////////////////////////////
+	gl.Clear(gl.COLOR_BUFFER_BIT)
+	/////////////////////////////////////////////////////////////
+	/////////////////////////////////////////////////////////////
+	gl.ActiveTexture(gl.TEXTURE0)
+	draw.LOStex.Bind(gl.TEXTURE_2D)
+	draw.backgroundQuad.Bind(gl.ARRAY_BUFFER)
+	draw.backgroundShader.Use()
 
+	posAttrib = draw.simpleShader.GetAttribLocation("position")
+	posAttrib.AttribPointer(2, gl.FLOAT, false, 0, nil)
+	posAttrib.EnableArray()
+
+	gl.DrawArrays(gl.QUADS, 0, 6)
+
+	draw.backgroundQuad.Unbind(gl.ARRAY_BUFFER)
+	draw.LOStex.Unbind(gl.TEXTURE_2D)
+	/////////////////////////////////////////////////////////
+	/////////////////////////////////////////////////////////
 	draw.simpleQuad.Bind(gl.ARRAY_BUFFER)
 	draw.simpleShader.Use()
 
@@ -203,6 +308,8 @@ func (draw *Draw) draw(scene *Scene, ops *OutputState) {
 			}
 		}
 	}
+	/////////////////////////////////////////////////////////
+	/////////////////////////////////////////////////////////
 	uniColor = draw.simpleShader.GetUniformLocation("triangleColor")
 	uniColor.Uniform3f(1.0, 0.0, 0.0)
 
