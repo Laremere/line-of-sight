@@ -203,7 +203,7 @@ outerLoop:
 		}
 	}
 	if ss != nil {
-
+		sc.player.speed = ss.Speed
 		sc.enemies = make([]Enemy, len(ss.Players))
 		for i := range ss.Players {
 			sc.enemies[i].color = ss.Players[i].Color

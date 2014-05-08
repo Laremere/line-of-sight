@@ -110,14 +110,51 @@ func masterLoop() {
 				0.2,
 			}
 
+			numIt := 0
+			for _, player := range players {
+				if player.state == playerInvincible {
+					player.invincibleTime -= 1
+					if player.invincibleTime <= 0 {
+						player.state = playerRun
+					}
+				}
+
+				if player.state == playerIt {
+					numIt += 1
+					for _, victum := range players {
+						if player.id == victum.id {
+							continue
+						}
+						diffX := player.position[0] - victum.position[0]
+						diffY := player.position[1] - victum.position[1]
+
+						if diffX < 1 && diffX > -1 && diffY > -1 && diffY < 1 {
+							if victum.state == playerRun {
+								victum.state = playerIt
+								player.state = playerInvincible
+								player.invincibleTime = 300
+							}
+						}
+					}
+				}
+			}
+
+			if numIt == 0 {
+				for _, player := range players {
+					player.state = playerIt
+				}
+			}
+
 			for _, player := range players {
 				serverState.Players = append(serverState.Players, common.Player{
-					player.position, [3]float32{1.0, 0.0, 0.0},
+					player.position, colorMap[player.state],
 				})
 			}
 
 			for _, player := range players {
-				player.toSend <- &serverState
+				personalServerState := serverState
+				personalServerState.Speed = speedMap[player.state]
+				player.toSend <- &personalServerState
 			}
 		}
 	}
@@ -135,12 +172,13 @@ type playerUpdate struct {
 }
 
 type Player struct {
-	id       int
-	toSend   chan *common.ServerState
-	position [2]float32
-	state    PlayerState
-	gobIn    *gob.Decoder
-	gobout   *gob.Encoder
+	id             int
+	toSend         chan *common.ServerState
+	position       [2]float32
+	state          PlayerState
+	gobIn          *gob.Decoder
+	gobout         *gob.Encoder
+	invincibleTime int
 }
 
 type PlayerState int
@@ -150,3 +188,12 @@ const (
 	playerIt
 	playerInvincible
 )
+
+var colorMap = map[PlayerState][3]float32{
+	playerRun:        [3]float32{0.0, 1.0, 0.0},
+	playerIt:         [3]float32{1.0, 0.0, 0.0},
+	playerInvincible: [3]float32{1.0, 1.0, 1.0}}
+var speedMap = map[PlayerState]float32{
+	playerRun:        0.1,
+	playerIt:         0.15,
+	playerInvincible: 0.3}
